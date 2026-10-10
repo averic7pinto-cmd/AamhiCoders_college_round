@@ -28,6 +28,7 @@ live_state = {
     "gesture": "Waiting for gesture",
     "confidence": None,
     "head_direction": "CENTER",
+    "head_pitch": "CENTER",  # UP | DOWN | CENTER | CALIBRATING
     "error": None,
     "updated_at": None,
 }
@@ -196,6 +197,7 @@ def run():
         gesture="Starting tracking...",
         confidence=None,
         head_direction="CENTER",
+        head_pitch="CENTER",
         error=None,
         updated_at=time.time(),
     )
@@ -240,6 +242,16 @@ def run():
         head_click_delay = 0.8
         previous_head_turn = "CENTER"
         head_turn_threshold = 0.12
+
+        # Up / down head scrolling
+        previous_head_pitch = "CENTER"
+        last_scroll_time = 0.0
+        scroll_repeat_delay = 0.15   # seconds between scroll steps while held
+        scroll_step = 120            # 120 = one wheel notch on Windows
+        pitch_threshold = 0.04       # how far from neutral counts as up/down
+        calibration_frames = 45      # ~1.5 s of looking straight ahead
+        pitch_samples = []
+        pitch_baseline = None
 
         frame_number = 0
         failed_reads = 0
@@ -303,14 +315,16 @@ def run():
                 )
 
                 # --------------------------------------
-                # HEAD DIRECTION
+                # HEAD DIRECTION (left/right + up/down)
                 # --------------------------------------
 
                 head_turn = "CENTER"
+                head_pitch = "CENTER"
 
                 if face_result.face_landmarks:
                     face = face_result.face_landmarks[0]
 
+                    # Left / right
                     nose_x = face[1].x
                     eye_midpoint = (face[33].x + face[263].x) / 2
                     eye_distance = abs(face[263].x - face[33].x)
@@ -323,13 +337,48 @@ def run():
                         elif turn_value > head_turn_threshold:
                             head_turn = "RIGHT"
 
+                    # Up / down: nose position relative to the eyes,
+                    # normalised by face height (forehead -> chin).
+                    eye_y = (face[33].y + face[263].y) / 2
+                    face_height = face[152].y - face[10].y
+
+                    if face_height > 0:
+                        pitch_raw = (face[1].y - eye_y) / face_height
+
+                        if pitch_baseline is None:
+                            # Calibration: user looks straight ahead
+                            pitch_samples.append(pitch_raw)
+                            head_pitch = "CALIBRATING"
+
+                            if len(pitch_samples) >= calibration_frames:
+                                pitch_baseline = (
+                                    sum(pitch_samples) / len(pitch_samples)
+                                )
+                        else:
+                            delta = pitch_raw - pitch_baseline
+
+                            # Looking up moves the nose up in the image
+                            # (smaller y), so delta goes negative.
+                            if delta < -pitch_threshold:
+                                head_pitch = "UP"
+                            elif delta > pitch_threshold:
+                                head_pitch = "DOWN"
+                            else:
+                                head_pitch = "CENTER"
+                                # Slowly adapt baseline while head is neutral
+                                pitch_baseline += (
+                                    (pitch_raw - pitch_baseline) * 0.01
+                                )
+
                 update_state(
                     head_direction=head_turn,
+                    head_pitch=head_pitch,
                     updated_at=time.time(),
                 )
 
                 current_time = time.time()
 
+                # Left / right head click (unchanged)
                 if (
                     head_turn != "CENTER"
                     and previous_head_turn == "CENTER"
@@ -351,6 +400,19 @@ def run():
                     last_head_click_time = current_time
 
                 previous_head_turn = head_turn
+
+                # Up / down head = continuous scrolling while held
+                if head_pitch in ("UP", "DOWN"):
+                    if head_pitch != previous_head_pitch:
+                        last_scroll_time = 0.0  # scroll immediately on entry
+
+                    if current_time - last_scroll_time >= scroll_repeat_delay:
+                        pyautogui.scroll(
+                            scroll_step if head_pitch == "UP" else -scroll_step
+                        )
+                        last_scroll_time = current_time
+
+                previous_head_pitch = head_pitch
 
                 # --------------------------------------
                 # HAND DETECTION AND GESTURE CLASSIFICATION
@@ -447,6 +509,7 @@ def run():
                 else "Tracking stopped"
             ),
             confidence=None,
+            head_pitch="CENTER",
             updated_at=time.time(),
         )
 
