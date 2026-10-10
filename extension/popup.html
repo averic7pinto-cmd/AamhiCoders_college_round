@@ -1,0 +1,157 @@
+﻿
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HANDSFREE</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="header">
+      <div class="brand-icon">H<span>F</span></div>
+
+      <div class="brand-copy">
+        <h1>HANDSFREE</h1>
+        <p>ACCESSIBILITY CONTROL CENTER</p>
+      </div>
+
+      <span id="statusDot" class="status-dot"></span>
+    </header>
+
+    <section class="session-heading">
+      <div>
+        <p class="eyebrow">YOUR WORKSPACE</p>
+        <h2>Move beyond<br />the mouse<span>.</span></h2>
+      </div>
+
+      <span id="sessionBadge" class="badge idle">Idle</span>
+    </section>
+
+    <section class="session-card">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">GESTURE CONTROL SYSTEM</p>
+          <h3>HandMouse</h3>
+        </div>
+
+        <div class="camera-icon">◎</div>
+      </div>
+
+      <p class="description">
+        Navigate websites using your hand gestures and head movements.
+      </p>
+
+      <div class="system-status">
+        <span id="connectionIndicator" class="connection-indicator"></span>
+        <div class="status-copy">
+          <span id="connectionTitle">Checking connection...</span>
+          <small id="connectionMessage">Connecting to local server</small>
+        </div>
+        <button id="refreshStatus" class="refresh-button" title="Refresh status"
+          aria-label="Refresh server status">↻</button>
+      </div>
+
+      <div class="session-actions">
+        <button id="startHandMouse" class="primary-button" disabled>
+          <span>▶</span> Start HandMouse
+        </button>
+
+        <button id="stopHandMouse" class="stop-button" disabled>
+          Stop HandMouse
+        </button>
+      </div>
+
+      <p id="status" class="status-message" role="status" aria-live="polite">
+        Connecting to HandMouse...
+      </p>
+    </section>
+
+    <section class="info-section">
+      <div class="section-title">
+        <h3>Session readiness</h3>
+        <span class="section-caption">LIVE STATUS</span>
+      </div>
+
+      <div class="readiness-list">
+        <div class="readiness-item">
+          <div class="readiness-icon camera">◎</div>
+          <div class="readiness-copy">
+            <strong>Camera</strong>
+            <span id="cameraStatus">Waiting for HandMouse</span>
+          </div>
+          <span id="cameraBadge" class="mini-badge">IDLE</span>
+        </div>
+
+        <div class="readiness-item">
+          <div class="readiness-icon hand">✋</div>
+          <div class="readiness-copy">
+            <strong>Hand gestures</strong>
+            <span>Cursor movement</span>
+          </div>
+          <span class="mini-badge">PYTHON</span>
+        </div>
+
+        <div class="readiness-item">
+          <div class="readiness-icon head">◉</div>
+          <div class="readiness-copy">
+            <strong>Head movements</strong>
+            <span>Configured gesture actions</span>
+          </div>
+          <span class="mini-badge">PYTHON</span>
+        </div>
+
+        <div class="readiness-item">
+          <div class="readiness-icon voice">♫</div>
+          <div class="readiness-copy">
+            <strong>Voice controls</strong>
+            <span>Separate integration needed</span>
+          </div>
+          <span class="mini-badge muted">NOT LINKED</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="info-section quick-section">
+      <div class="section-title">
+        <h3>Quick browser actions</h3>
+        <span class="section-caption">CURRENT TAB</span>
+      </div>
+
+      <div class="quick-grid">
+        <button id="highlight" class="quick-action">
+          <span class="action-icon">⌗</span>
+          <span>Highlight elements</span>
+          <span class="action-arrow">↗</span>
+        </button>
+
+        <button id="scrollDown" class="quick-action">
+          <span class="action-icon">↓</span>
+          <span>Scroll down</span>
+          <span class="action-arrow">↗</span>
+        </button>
+
+        <button id="scrollUp" class="quick-action">
+          <span class="action-icon">↑</span>
+          <span>Scroll up</span>
+          <span class="action-arrow">↗</span>
+        </button>
+
+        <button id="scrollTop" class="quick-action">
+          <span class="action-icon">⌃</span>
+          <span>Back to top</span>
+          <span class="action-arrow">↗</span>
+        </button>
+      </div>
+    </section>
+
+    <footer>
+      <span>MANIFEST V3</span>
+      <span>BUILT FOR ACCESSIBILITY</span>
+    </footer>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>

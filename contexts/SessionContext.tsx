@@ -1,6 +1,22 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import type { CameraState, InteractionMode, MicState, SessionStatus } from '../types/session';
+
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react';
+import type {
+  CameraState,
+  InteractionMode,
+  MicState,
+  SessionStatus,
+} from '../types/session';
 import { useScreenInit } from '../useScreenInit.js';
+
+const BACKEND_URL = 'http://127.0.0.1:8000';
+const API_KEY = 'HM-local-2026-change-this-key';
 
 interface SessionContextValue {
   status: SessionStatus;
@@ -27,6 +43,7 @@ interface SessionContextValue {
   setDwellMs: (v: number) => void;
   setMode: (m: Exclude<InteractionMode, 'off'>) => void;
   grantCamera: () => void;
+  loseCamera: () => void;
   recenter: () => void;
   retryMic: () => void;
 }
@@ -39,61 +56,162 @@ interface SessionProviderProps {
 
 const SessionContext = createContext<SessionContextValue | null>(null);
 
-export function SessionProvider({ children, initialCamera, initialMic }: SessionProviderProps) {
-  const screenInit = useScreenInit() as { sessionStatus?: SessionStatus };
-  const [status, setStatus] = useState<SessionStatus>(screenInit.sessionStatus ?? 'idle');
-  const [elapsed, setElapsed] = useState(screenInit.sessionStatus ? 754 : 0);
-  const [cameraState, setCameraState] = useState<CameraState>(initialCamera);
+export function SessionProvider({
+  children,
+  initialCamera,
+  initialMic,
+}: SessionProviderProps) {
+  const screenInit = useScreenInit() as {
+    sessionStatus?: SessionStatus;
+  };
+
+  const [status, setStatus] = useState<SessionStatus>(
+    screenInit.sessionStatus ?? 'idle',
+  );
+  const [elapsed, setElapsed] = useState(
+    screenInit.sessionStatus ? 754 : 0,
+  );
+  const [cameraState, setCameraState] =
+    useState<CameraState>(initialCamera);
   const [micState, setMicState] = useState<MicState>(initialMic);
   const [headTracking, setHeadTracking] = useState(true);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [sensitivity, setSensitivity] = useState(6);
   const [smoothing, setSmoothing] = useState(60);
   const [dwellMs, setDwellMs] = useState(1000);
-  const [confidence, setConfidence] = useState<number | null>(null);
+  const [isTracking, setIsTracking] = useState(false);
 
-  useEffect(() => setCameraState(initialCamera), [initialCamera]);
-  useEffect(() => setMicState(initialMic), [initialMic]);
+  useEffect(() => {
+    setCameraState(initialCamera);
+  }, [initialCamera]);
+
+  useEffect(() => {
+    setMicState(initialMic);
+  }, [initialMic]);
 
   useEffect(() => {
     if (status !== 'running') return;
-    const t = window.setInterval(() => setElapsed((e) => e + 1), 1000);
-    return () => window.clearInterval(t);
+
+    const timer = window.setInterval(() => {
+      setElapsed((current) => current + 1);
+    }, 1000);
+
+    return () => window.clearInterval(timer);
   }, [status]);
 
-  const isTracking = status === 'running' && headTracking && cameraState === 'ready';
+  const confidence: number | null = null;
 
-  useEffect(() => {
-    if (!isTracking) {
-      setConfidence(null);
-      return;
+  const canStart =
+    (cameraState === 'ready' && headTracking) ||
+    (micState === 'ready' && voiceEnabled);
+
+  const start = useCallback(async () => {
+    if (!canStart || status === 'running') return;
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/start`, {
+        method: 'POST',
+        headers: {
+          'x-handmouse-key': API_KEY,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Backend returned HTTP ${response.status}`);
+      }
+
+      setIsTracking(true);
+      setStatus('running');
+    } catch (error) {
+      console.error('Could not start Hand Free backend:', error);
+      window.alert(
+        'Could not start tracking. Check that the Python backend is running and its API key matches.',
+      );
     }
-    setConfidence(94);
-    const t = window.setInterval(() => setConfidence(90 + Math.round(Math.random() * 7)), 1600);
-    return () => window.clearInterval(t);
-  }, [isTracking]);
+  }, [canStart, status]);
 
-  const canStart = (cameraState === 'ready' && headTracking) || (micState === 'ready' && voiceEnabled);
+  const pause = useCallback(async () => {
+    try {
+      const response = await fetch(`${BACKEND_URL}/stop`, {
+        method: 'POST',
+        headers: {
+          'x-handmouse-key': API_KEY,
+        },
+      });
 
-  const start = useCallback(() => {
-    if (canStart) setStatus('running');
-  }, [canStart]);
-  const pause = useCallback(() => setStatus((s) => (s === 'running' ? 'paused' : s)), []);
-  const stop = useCallback(() => {
-    setStatus('idle');
-    setElapsed(0);
+      if (!response.ok) {
+        throw new Error(`Backend returned HTTP ${response.status}`);
+      }
+
+      setIsTracking(false);
+      setStatus('paused');
+    } catch (error) {
+      console.error('Could not pause tracking:', error);
+      window.alert('Could not pause tracking. Check the backend connection.');
+    }
   }, []);
+
+  const stop = useCallback(async () => {
+    try {
+      const response = await fetch(`${BACKEND_URL}/stop`, {
+        method: 'POST',
+        headers: {
+          'x-handmouse-key': API_KEY,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Backend returned HTTP ${response.status}`);
+      }
+
+      setIsTracking(false);
+      setStatus('idle');
+      setElapsed(0);
+    } catch (error) {
+      console.error('Could not stop tracking:', error);
+      window.alert('Could not stop tracking. Check the backend connection.');
+    }
+  }, []);
+
   const toggle = useCallback(() => {
-    if (status === 'running') pause();
-    else start();
+    if (status === 'running') {
+      void pause();
+    } else {
+      void start();
+    }
   }, [status, pause, start]);
 
   const mode: InteractionMode =
-    headTracking && voiceEnabled ? 'head-voice' : headTracking ? 'head' : voiceEnabled ? 'voice' : 'off';
+    headTracking && voiceEnabled
+      ? 'head-voice'
+      : headTracking
+        ? 'head'
+        : voiceEnabled
+          ? 'voice'
+          : 'off';
 
-  const setMode = useCallback((m: Exclude<InteractionMode, 'off'>) => {
-    setHeadTracking(m !== 'voice');
-    setVoiceEnabled(m !== 'head');
+  const setMode = useCallback(
+    (nextMode: Exclude<InteractionMode, 'off'>) => {
+      setHeadTracking(nextMode !== 'voice');
+      setVoiceEnabled(nextMode !== 'head');
+    },
+    [],
+  );
+
+  const grantCamera = useCallback(() => {
+    setCameraState('ready');
+  }, []);
+
+  const loseCamera = useCallback(() => {
+    setCameraState('lost');
+  }, []);
+
+  const recenter = useCallback(() => {
+    // Camera recentering can be connected separately.
+  }, []);
+
+  const retryMic = useCallback(() => {
+    setMicState('unavailable');
   }, []);
 
   const value = useMemo<SessionContextValue>(
@@ -121,18 +239,50 @@ export function SessionProvider({ children, initialCamera, initialMic }: Session
       setSmoothing,
       setDwellMs,
       setMode,
-      grantCamera: () => setCameraState('ready'),
-      recenter: () => setCameraState('ready'),
-      retryMic: () => setMicState('ready'),
+      grantCamera,
+      loseCamera,
+      recenter,
+      retryMic,
     }),
-    [status, elapsed, cameraState, micState, headTracking, voiceEnabled, sensitivity, smoothing, dwellMs, confidence, isTracking, canStart, mode, start, pause, stop, toggle, setMode],
+    [
+      status,
+      elapsed,
+      cameraState,
+      micState,
+      headTracking,
+      voiceEnabled,
+      sensitivity,
+      smoothing,
+      dwellMs,
+      confidence,
+      isTracking,
+      canStart,
+      mode,
+      start,
+      pause,
+      stop,
+      toggle,
+      setMode,
+      grantCamera,
+      loseCamera,
+      recenter,
+      retryMic,
+    ],
   );
 
-  return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
+  return (
+    <SessionContext.Provider value={value}>
+      {children}
+    </SessionContext.Provider>
+  );
 }
 
 export function useSession(): SessionContextValue {
-  const ctx = useContext(SessionContext);
-  if (!ctx) throw new Error('useSession must be used inside SessionProvider');
-  return ctx;
+  const context = useContext(SessionContext);
+
+  if (!context) {
+    throw new Error('useSession must be used inside SessionProvider');
+  }
+
+  return context;
 }

@@ -19,7 +19,7 @@ interface AppProps {
   micState?: MicrophoneState;
 }
 
-export function App({ cameraState = 'ready', micState = 'ready' }: AppProps) {
+export function App({ cameraState = 'permission', micState = 'ready' }: AppProps) {
   return (
     <SessionProvider initialCamera={cameraState} initialMic={micState}>
       <BrowserRouter>
