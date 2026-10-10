@@ -1,0 +1,134 @@
+/* @import url() FONT IMPORTS MUST ALWAYS BE AT THE VERY TOP OF THIS FILE, ABOVE THE TAILWIND IMPORTS — DO NOT DELETE THIS COMMENT */
+@import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@500;600;700&family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+/* CRITICAL: THE FOLLOWING TAILWIND IMPORTS MUST NEVER BE DELETED OR REORDERED — DO NOT DELETE THIS COMMENT */
+@import 'tailwindcss/base';
+@import 'tailwindcss/components';
+@import 'tailwindcss/utilities';
+
+/* END TAILWIND IMPORTS — ALL OTHER CSS MUST GO BELOW THIS LINE */
+
+html,
+body,
+#root {
+  min-height: 100%;
+  background: #10131d;
+  color: #f7f8ff;
+}
+body {
+  font-family: 'Manrope', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+::selection {
+  background: rgba(66, 99, 255, 0.5);
+  color: #fff;
+}
+:focus-visible {
+  outline: 2px solid #31d7ff;
+  outline-offset: 3px;
+}
+.bg-grid {
+  background-image: linear-gradient(rgba(49, 215, 255, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(49, 215, 255, 0.07) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+.glass {
+  background: rgba(16, 19, 29, 0.72);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+/* Luminous gradient hairline border */
+.luminous {
+  position: relative;
+}
+.luminous::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(135deg, rgba(49, 215, 255, 0.75), rgba(66, 99, 255, 0.15) 40%, rgba(155, 92, 255, 0.65));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 1;
+}
+/* Range slider */
+.hf-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 32px;
+  background: transparent;
+  cursor: pointer;
+}
+.hf-range:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+.hf-range::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #31d7ff 0%, #9b5cff var(--fill), #2a3148 var(--fill));
+}
+.hf-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 24px;
+  height: 24px;
+  margin-top: -8px;
+  border-radius: 50%;
+  background: #f7f8ff;
+  border: 4px solid #4263ff;
+  box-shadow: 0 0 0 5px rgba(66, 99, 255, 0.22);
+  transition: box-shadow 150ms ease-out;
+}
+.hf-range:hover::-webkit-slider-thumb {
+  box-shadow: 0 0 0 7px rgba(66, 99, 255, 0.3);
+}
+.hf-range:focus-visible {
+  outline: none;
+}
+.hf-range:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px #10131d, 0 0 0 6px #31d7ff;
+}
+.hf-range::-moz-range-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #2a3148;
+}
+.hf-range::-moz-range-progress {
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #31d7ff, #9b5cff);
+}
+.hf-range::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #f7f8ff;
+  border: 4px solid #4263ff;
+  box-shadow: 0 0 0 5px rgba(66, 99, 255, 0.22);
+}
+.hf-range:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 3px #10131d, 0 0 0 6px #31d7ff;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+.reduce-motion *,
+.reduce-motion *::before,
+.reduce-motion *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+}
