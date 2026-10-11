@@ -518,7 +518,6 @@ def run():
 
         previous_head_vertical = "CENTER"
         last_scroll_time = 0.0
-
         scroll_repeat_delay = 0.15
         scroll_step = 120
 
@@ -530,10 +529,8 @@ def run():
         # reduce accidental scrolling from small movements.
         pitch_threshold = 0.07
         pitch_confirm_frames = 3
-
         pitch_samples = []
         pitch_baseline = None
-
         up_count = 0
         down_count = 0
 
