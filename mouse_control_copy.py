@@ -248,10 +248,14 @@ def run():
         last_scroll_time = 0.0
         scroll_repeat_delay = 0.15   # seconds between scroll steps while held
         scroll_step = 120            # 120 = one wheel notch on Windows
-        pitch_threshold = 0.04       # how far from neutral counts as up/down
         calibration_frames = 45      # ~1.5 s of looking straight ahead
         pitch_samples = []
         pitch_baseline = None
+        # changed
+        pitch_threshold = 0.07       # bigger = needs a sharper head movement
+        pitch_confirm_frames = 3     # movement must last this many frames
+        up_count = 0
+        down_count = 0
 
         frame_number = 0
         failed_reads = 0
@@ -360,15 +364,25 @@ def run():
                             # Looking up moves the nose up in the image
                             # (smaller y), so delta goes negative.
                             if delta < -pitch_threshold:
-                                head_pitch = "UP"
+                                up_count += 1
+                                down_count = 0
                             elif delta > pitch_threshold:
-                                head_pitch = "DOWN"
+                                down_count += 1
+                                up_count = 0
                             else:
-                                head_pitch = "CENTER"
+                                up_count = 0
+                                down_count = 0
                                 # Slowly adapt baseline while head is neutral
                                 pitch_baseline += (
                                     (pitch_raw - pitch_baseline) * 0.01
                                 )
+
+                            if up_count >= pitch_confirm_frames:
+                                head_pitch = "UP"
+                            elif down_count >= pitch_confirm_frames:
+                                head_pitch = "DOWN"
+                            else:
+                                head_pitch = "CENTER"
 
                 update_state(
                     head_direction=head_turn,
