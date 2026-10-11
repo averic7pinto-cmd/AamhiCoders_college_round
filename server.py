@@ -1,11 +1,13 @@
 import asyncio
 import secrets
 import threading
+from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 import mouse_control_copy
 
@@ -29,6 +31,23 @@ app.add_middleware(
 
 tracking_thread = None
 lock = threading.Lock()
+
+
+class CalibrationBody(BaseModel):
+    yaw_threshold: Optional[float] = None
+    yaw_center: Optional[float] = None
+    pitch_center: Optional[float] = None
+    sensitivity: Optional[int] = None
+    smoothing: Optional[int] = None
+    head_actions: Optional[bool] = None
+    cursor_control: Optional[bool] = None
+
+
+def dump(model: BaseModel) -> dict:
+    """Works with both Pydantic v1 and v2."""
+    if hasattr(model, "model_dump"):
+        return model.model_dump(exclude_none=True)
+    return model.dict(exclude_none=True)
 
 
 def check_key(provided: str):
@@ -57,6 +76,22 @@ def status(x_handmouse_key: str = Header(default="")):
 def live_data(x_handmouse_key: str = Header(default="")):
     check_key(x_handmouse_key)
     return mouse_control_copy.get_live_state()
+
+
+@app.get("/calibration")
+def get_calibration(x_handmouse_key: str = Header(default="")):
+    check_key(x_handmouse_key)
+    return mouse_control_copy.get_settings()
+
+
+@app.post("/calibration")
+def set_calibration(
+    body: CalibrationBody,
+    x_handmouse_key: str = Header(default=""),
+):
+    check_key(x_handmouse_key)
+    mouse_control_copy.apply_settings(**dump(body))
+    return mouse_control_copy.get_settings()
 
 
 @app.get("/video-feed")
@@ -99,10 +134,15 @@ def start(x_handmouse_key: str = Header(default="")):
 
     with lock:
         if is_tracking():
-            return {
-                "message": "HandMouse is already running",
-                "tracking": True,
-            }
+            if mouse_control_copy.stop_event.is_set():
+                # A stop is in progress: wait for the camera to release.
+                tracking_thread.join(timeout=3)
+
+            if is_tracking():
+                return {
+                    "message": "HandMouse is already running",
+                    "tracking": True,
+                }
 
         tracking_thread = threading.Thread(
             target=mouse_control_copy.run,
@@ -117,6 +157,11 @@ def start(x_handmouse_key: str = Header(default="")):
 def stop(x_handmouse_key: str = Header(default="")):
     check_key(x_handmouse_key)
     mouse_control_copy.stop()
+
+    thread = tracking_thread
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=3)
+
     return {"message": "Stop requested", "tracking": is_tracking()}
 
 

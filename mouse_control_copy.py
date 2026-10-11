@@ -1,11 +1,29 @@
+import importlib
 import os
 import time
 import threading
 import traceback
 
-import cv2
-import mediapipe as mp
-import pyautogui
+try:
+    cv2 = importlib.import_module("cv2")
+except ModuleNotFoundError as exc:
+    if exc.name != "cv2":
+        raise
+    cv2 = None
+
+try:
+    pyautogui = importlib.import_module("pyautogui")
+except ModuleNotFoundError as exc:
+    if exc.name != "pyautogui":
+        raise
+    pyautogui = None
+
+try:
+    mp = importlib.import_module("mediapipe")
+except ModuleNotFoundError as exc:
+    if exc.name != "mediapipe":
+        raise
+    mp = None
 
 from voice_typing import start_voice_typing
 
@@ -17,30 +35,65 @@ from voice_typing import start_voice_typing
 stop_event = threading.Event()
 state_lock = threading.Lock()
 frame_lock = threading.Lock()
+settings_lock = threading.Lock()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 live_state = {
     "running": False,
-    "phase": "stopped",  # stopped | loading-models | opening-camera | running
+    "phase": "stopped",
     "hand_detected": False,
     "landmarks": [],
     "gesture": "Waiting for gesture",
     "confidence": None,
+
+    # Face and head data exposed to the existing frontend.
+    "face_detected": False,
+    "head_yaw": 0.0,
+    "head_pitch": 0.0,
     "head_direction": "CENTER",
-    "head_pitch": "CENTER",  # UP | DOWN | CENTER | CALIBRATING
+    "head_vertical": "CENTER",
+
+    # Camera diagnostics.
+    "brightness": None,
+    "frame_count": 0,
+
     "error": None,
     "updated_at": None,
 }
 
-# Latest annotated JPEG frame, streamed to the web UI.
+
+# --------------------------------------------------
+# SETTINGS
+# Existing frontend calibration/settings interface.
+# --------------------------------------------------
+
+settings = {
+    "yaw_threshold": 0.12,
+    "yaw_center": 0.0,
+    "pitch_center": 0.0,
+    "sensitivity": 6,
+    "smoothing": 60,
+    "head_actions": True,
+    "cursor_control": True,
+}
+
+
+# A camera image with average brightness below this
+# value is considered black during webcam startup.
+BLACK_LIMIT = 6.0
+
+
+# Latest annotated JPEG frame streamed to the web UI.
 _latest_jpeg = None
 _latest_frame_id = 0
 
-# pyautogui waits 0.1 s after every call by default, which
-# makes cursor control laggy. Disable it.
-pyautogui.PAUSE = 0
-pyautogui.FAILSAFE = True
+
+# Disable PyAutoGUI's default delay when available.
+if pyautogui is not None:
+    pyautogui.PAUSE = 0
+    pyautogui.FAILSAFE = True
+
 
 HAND_CONNECTIONS = [
     (0, 1), (1, 2), (2, 3), (3, 4),
@@ -52,6 +105,10 @@ HAND_CONNECTIONS = [
 ]
 
 
+# --------------------------------------------------
+# SHARED STATE HELPERS
+# --------------------------------------------------
+
 def update_state(**updates):
     with state_lock:
         live_state.update(updates)
@@ -60,6 +117,19 @@ def update_state(**updates):
 def get_live_state():
     with state_lock:
         return dict(live_state)
+
+
+def apply_settings(**updates):
+    """Update only known settings without replacing the settings dict."""
+    with settings_lock:
+        for key, value in updates.items():
+            if key in settings and value is not None:
+                settings[key] = value
+
+
+def get_settings():
+    with settings_lock:
+        return dict(settings)
 
 
 def get_latest_frame():
@@ -72,7 +142,9 @@ def _publish_frame(frame):
     global _latest_jpeg, _latest_frame_id
 
     ok, buffer = cv2.imencode(
-        ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70]
+        ".jpg",
+        frame,
+        [cv2.IMWRITE_JPEG_QUALITY, 70],
     )
 
     if ok:
@@ -89,6 +161,7 @@ def _clear_frame():
 
 
 def stop():
+    """Request that the tracking loop stop."""
     stop_event.set()
 
 
@@ -100,33 +173,58 @@ def draw_hand(frame, landmarks):
     height, width = frame.shape[:2]
 
     points = [
-        (int(p.x * width), int(p.y * height)) for p in landmarks
+        (int(p.x * width), int(p.y * height))
+        for p in landmarks
     ]
 
-    # Colors are BGR.
+    # OpenCV uses BGR color ordering.
     for a, b in HAND_CONNECTIONS:
-        cv2.line(frame, points[a], points[b], (99, 255, 184), 2)
+        cv2.line(
+            frame,
+            points[a],
+            points[b],
+            (99, 255, 184),
+            2,
+        )
 
     for index, point in enumerate(points):
         if index == 8:
-            cv2.circle(frame, point, 6, (249, 232, 103), -1)
-            cv2.circle(frame, point, 6, (255, 255, 255), 1)
+            cv2.circle(
+                frame,
+                point,
+                6,
+                (249, 232, 103),
+                -1,
+            )
+            cv2.circle(
+                frame,
+                point,
+                6,
+                (255, 255, 255),
+                1,
+            )
         else:
-            cv2.circle(frame, point, 3, (255, 255, 255), -1)
+            cv2.circle(
+                frame,
+                point,
+                3,
+                (255, 255, 255),
+                -1,
+            )
 
 
 # --------------------------------------------------
 # RULE-BASED GESTURE CLASSIFIER
-# This is a fallback classifier, not an ML model.
+# This is a heuristic classifier, not an ML model.
 # MediaPipe provides the 21 hand landmarks.
 # --------------------------------------------------
 
 def classify_gesture(landmarks):
     finger_pairs = [
-        (8, 6),    # Index
-        (12, 10),  # Middle
-        (16, 14),  # Ring
-        (20, 18),  # Little
+        (8, 6),      # Index
+        (12, 10),    # Middle
+        (16, 14),    # Ring
+        (20, 18),    # Little
     ]
 
     fingers_up = [
@@ -137,7 +235,9 @@ def classify_gesture(landmarks):
     index_up, middle_up, ring_up, little_up = fingers_up
 
     # Simple thumb-extension heuristic.
-    thumb_extended = abs(landmarks[4].x - landmarks[2].x) > 0.08
+    thumb_extended = (
+        abs(landmarks[4].x - landmarks[2].x) > 0.08
+    )
 
     if not any(fingers_up) and not thumb_extended:
         return "Fist"
@@ -145,10 +245,20 @@ def classify_gesture(landmarks):
     if all(fingers_up):
         return "Open Palm"
 
-    if index_up and middle_up and not ring_up and not little_up:
+    if (
+        index_up
+        and middle_up
+        and not ring_up
+        and not little_up
+    ):
         return "Peace"
 
-    if index_up and not middle_up and not ring_up and not little_up:
+    if (
+        index_up
+        and not middle_up
+        and not ring_up
+        and not little_up
+    ):
         return "Point"
 
     if thumb_extended and not any(fingers_up):
@@ -159,25 +269,124 @@ def classify_gesture(landmarks):
 
 # --------------------------------------------------
 # CAMERA
+#
+# Retains the old multi-backend startup logic:
+# - DirectShow
+# - Media Foundation
+# - Automatic backend
+# - Camera warm-up
+# - Black-frame detection
+# - Dark-but-working fallback
 # --------------------------------------------------
 
-def open_camera(attempts=10, delay=0.5):
-    """Open the webcam, retrying while the browser releases it."""
-    backend = cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY
+def _backends():
+    if os.name == "nt":
+        return [
+            cv2.CAP_DSHOW,
+            cv2.CAP_MSMF,
+            cv2.CAP_ANY,
+        ]
+
+    return [cv2.CAP_ANY]
+
+
+def _warm_up(cap, tries=30):
+    """
+    Read frames during camera startup.
+
+    Return the first acceptable brightness, or the best
+    brightness seen if the image remains dark. Return None
+    if no frame could be read.
+    """
+    best = None
+
+    for _ in range(tries):
+        if stop_event.is_set():
+            return best
+
+        ok, frame = cap.read()
+
+        if ok and frame is not None:
+            mean = float(frame[::8, ::8].mean())
+
+            best = (
+                mean
+                if best is None
+                else max(best, mean)
+            )
+
+            if mean > BLACK_LIMIT:
+                return mean
+
+        time.sleep(0.03)
+
+    return best
+
+
+def _open(backend):
+    cap = cv2.VideoCapture(0, backend)
+
+    if not cap.isOpened():
+        cap.release()
+        return None
+
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+    return cap
+
+
+def open_camera(attempts=4, delay=0.5):
+    """
+    Open the webcam using multiple backends.
+
+    Prefer a backend producing a visible image. If all
+    readable backends produce dark frames, retry the first
+    backend that successfully opened and returned frames.
+    """
+    dark_backend = None
 
     for _ in range(attempts):
-        if stop_event.is_set():
-            return None
+        for backend in _backends():
+            if stop_event.is_set():
+                return None
 
-        cap = cv2.VideoCapture(0, backend)
+            cap = _open(backend)
 
-        if cap.isOpened():
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            return cap
+            if cap is None:
+                continue
 
-        cap.release()
+            brightness = _warm_up(cap)
+
+            if stop_event.is_set():
+                cap.release()
+                return None
+
+            if (
+                brightness is not None
+                and brightness > BLACK_LIMIT
+            ):
+                return cap
+
+            # Opened but produced a dark/unreadable image.
+            cap.release()
+
+            if (
+                brightness is not None
+                and dark_backend is None
+            ):
+                dark_backend = backend
+
+        if dark_backend is not None:
+            break
+
         time.sleep(delay)
+
+    if (
+        dark_backend is not None
+        and not stop_event.is_set()
+    ):
+        return _open(dark_backend)
 
     return None
 
@@ -196,8 +405,13 @@ def run():
         landmarks=[],
         gesture="Starting tracking...",
         confidence=None,
+        face_detected=False,
+        head_yaw=0.0,
+        head_pitch=0.0,
         head_direction="CENTER",
-        head_pitch="CENTER",
+        head_vertical="CENTER",
+        brightness=None,
+        frame_count=0,
         error=None,
         updated_at=time.time(),
     )
@@ -205,8 +419,44 @@ def run():
     cap = None
 
     try:
-        hand_model_path = os.path.join(BASE_DIR, "hand_landmarker.task")
-        face_model_path = os.path.join(BASE_DIR, "face_landmarker.task")
+        # ------------------------------------------
+        # DEPENDENCY CHECKS
+        # ------------------------------------------
+
+        if pyautogui is None:
+            raise RuntimeError(
+                "PyAutoGUI is not installed in this Python "
+                "environment. Install it with: "
+                "python -m pip install pyautogui"
+            )
+
+        if mp is None:
+            raise RuntimeError(
+                "MediaPipe is not installed in this Python "
+                "environment. Install it with: "
+                "python -m pip install mediapipe"
+            )
+
+        if cv2 is None:
+            raise RuntimeError(
+                "OpenCV is not installed in this Python "
+                "environment. Install it with: "
+                "python -m pip install opencv-python"
+            )
+
+        # ------------------------------------------
+        # MODEL PATHS
+        # ------------------------------------------
+
+        hand_model_path = os.path.join(
+            BASE_DIR,
+            "hand_landmarker.task",
+        )
+
+        face_model_path = os.path.join(
+            BASE_DIR,
+            "face_landmarker.task",
+        )
 
         if not os.path.isfile(hand_model_path):
             raise FileNotFoundError(
@@ -218,72 +468,122 @@ def run():
                 f"Face model not found: {face_model_path}"
             )
 
+        # ------------------------------------------
+        # MEDIAPIPE CONFIGURATION
+        # ------------------------------------------
+
         BaseOptions = mp.tasks.BaseOptions
         RunningMode = mp.tasks.vision.RunningMode
 
-        hand_options = mp.tasks.vision.HandLandmarkerOptions(
-            base_options=BaseOptions(model_asset_path=hand_model_path),
-            running_mode=RunningMode.VIDEO,
-            num_hands=1,
+        hand_options = (
+            mp.tasks.vision.HandLandmarkerOptions(
+                base_options=BaseOptions(
+                    model_asset_path=hand_model_path,
+                ),
+                running_mode=RunningMode.VIDEO,
+                num_hands=1,
+            )
         )
 
-        face_options = mp.tasks.vision.FaceLandmarkerOptions(
-            base_options=BaseOptions(model_asset_path=face_model_path),
-            running_mode=RunningMode.VIDEO,
-            num_faces=1,
+        face_options = (
+            mp.tasks.vision.FaceLandmarkerOptions(
+                base_options=BaseOptions(
+                    model_asset_path=face_model_path,
+                ),
+                running_mode=RunningMode.VIDEO,
+                num_faces=1,
+            )
         )
 
         screen_width, screen_height = pyautogui.size()
 
+        # ------------------------------------------
+        # CURSOR SMOOTHING
+        # ------------------------------------------
+
         smooth_x, smooth_y = 0.0, 0.0
-        smoothing = 0.25
+
+        # ------------------------------------------
+        # HEAD LEFT/RIGHT CLICK CONFIGURATION
+        # ------------------------------------------
 
         last_head_click_time = 0.0
         head_click_delay = 0.8
         previous_head_turn = "CENTER"
         head_turn_threshold = 0.12
 
-        # Up / down head scrolling
-        previous_head_pitch = "CENTER"
+        # ------------------------------------------
+        # HEAD UP/DOWN SCROLL CONFIGURATION
+        # ------------------------------------------
+
+        previous_head_vertical = "CENTER"
         last_scroll_time = 0.0
-        scroll_repeat_delay = 0.15   # seconds between scroll steps while held
-        scroll_step = 120            # 120 = one wheel notch on Windows
-        pitch_threshold = 0.04       # how far from neutral counts as up/down
-        calibration_frames = 45      # ~1.5 s of looking straight ahead
+
+        scroll_repeat_delay = 0.15
+        scroll_step = 120
+
+        # Preserve the old calibration duration.
+        calibration_frames = 45
+
+        # Improved threshold and confirmation from the
+        # new version. Require consecutive frames to
+        # reduce accidental scrolling from small movements.
+        pitch_threshold = 0.07
+        pitch_confirm_frames = 3
+
         pitch_samples = []
         pitch_baseline = None
+
+        up_count = 0
+        down_count = 0
+
+        # ------------------------------------------
+        # FRAME TRACKING
+        # ------------------------------------------
 
         frame_number = 0
         failed_reads = 0
 
-        update_state(phase="opening-camera", updated_at=time.time())
+        update_state(
+            phase="opening-camera",
+            updated_at=time.time(),
+        )
+
         cap = open_camera()
 
         if cap is None:
             if stop_event.is_set():
                 return
+
             raise RuntimeError(
                 "Could not open webcam. Close other apps "
-                "using the camera and try again."
+                "(including browser tabs) using the camera "
+                "and try again."
             )
 
-        update_state(phase="loading-models", updated_at=time.time())
+        update_state(
+            phase="loading-models",
+            updated_at=time.time(),
+        )
 
-        with (
-            mp.tasks.vision.HandLandmarker.create_from_options(
-                hand_options
-            ) as detector,
-            mp.tasks.vision.FaceLandmarker.create_from_options(
-                face_options
-            ) as face_detector,
-        ):
-            update_state(phase="running", updated_at=time.time())
+        # ------------------------------------------
+        # TRACKING MODELS
+        # ------------------------------------------
+
+        with mp.tasks.vision.HandLandmarker.create_from_options(
+    hand_options
+) as detector, mp.tasks.vision.FaceLandmarker.create_from_options(
+    face_options
+) as face_detector:
+            update_state(
+                phase="running",
+                updated_at=time.time(),
+            )
 
             while cap.isOpened() and not stop_event.is_set():
                 success, frame = cap.read()
 
                 if not success:
-                    # Webcams often fail a few reads at startup.
                     failed_reads += 1
 
                     if failed_reads > 30:
@@ -296,10 +596,29 @@ def run():
 
                 failed_reads = 0
 
-                # Mirror the image for natural interaction.
+                # Take a thread-safe snapshot of settings
+                # for this frame.
+                cfg = get_settings()
+
+                # --------------------------------------
+                # MIRROR CAMERA IMAGE
+                # --------------------------------------
+
                 frame = cv2.flip(frame, 1)
 
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                # Update brightness periodically.
+                if frame_number % 15 == 0:
+                    update_state(
+                        brightness=round(
+                            float(frame[::8, ::8].mean()),
+                            1,
+                        ),
+                    )
+
+                rgb = cv2.cvtColor(
+                    frame,
+                    cv2.COLOR_BGR2RGB,
+                )
 
                 mp_image = mp.Image(
                     image_format=mp.ImageFormat.SRGB,
@@ -309,89 +628,227 @@ def run():
                 timestamp = frame_number * 33
                 frame_number += 1
 
-                result = detector.detect_for_video(mp_image, timestamp)
+                result = detector.detect_for_video(
+                    mp_image,
+                    timestamp,
+                )
+
                 face_result = face_detector.detect_for_video(
-                    mp_image, timestamp
+                    mp_image,
+                    timestamp,
                 )
 
                 # --------------------------------------
-                # HEAD DIRECTION (left/right + up/down)
+                # HEAD POSE
+                #
+                # head_yaw: numeric left/right value
+                # head_pitch: numeric face-pose value
+                # head_direction: LEFT/RIGHT/CENTER
+                # head_vertical: UP/DOWN/CENTER/CALIBRATING
+                #
+                # These names and types are kept compatible
+                # with the existing frontend.
                 # --------------------------------------
 
                 head_turn = "CENTER"
-                head_pitch = "CENTER"
+                head_vertical = "CENTER"
+
+                face_found = False
+                yaw = 0.0
+                pitch = 0.0
 
                 if face_result.face_landmarks:
                     face = face_result.face_landmarks[0]
 
-                    # Left / right
-                    nose_x = face[1].x
-                    eye_midpoint = (face[33].x + face[263].x) / 2
-                    eye_distance = abs(face[263].x - face[33].x)
+                    nose = face[1]
+
+                    eye_mid_x = (
+                        face[33].x + face[263].x
+                    ) / 2
+
+                    eye_mid_y = (
+                        face[33].y + face[263].y
+                    ) / 2
+
+                    eye_distance = abs(
+                        face[263].x - face[33].x
+                    )
+
+                    # ----------------------------------
+                    # NUMERIC YAW AND PITCH
+                    # Used by the existing calibration UI.
+                    # ----------------------------------
 
                     if eye_distance > 0:
-                        turn_value = (nose_x - eye_midpoint) / eye_distance
+                        face_found = True
 
-                        if turn_value < -head_turn_threshold:
+                        yaw = (
+                            nose.x - eye_mid_x
+                        ) / eye_distance
+
+                        pitch = (
+                            nose.y - eye_mid_y
+                        ) / eye_distance
+
+                        # Apply the existing configurable
+                        # yaw center and threshold.
+                        turn_value = (
+                            yaw - cfg["yaw_center"]
+                        )
+
+                        effective_yaw_threshold = max(
+                            0.01,
+                            abs(cfg["yaw_threshold"]),
+                        )
+
+                        if (
+                            turn_value
+                            < -effective_yaw_threshold
+                        ):
                             head_turn = "LEFT"
-                        elif turn_value > head_turn_threshold:
+
+                        elif (
+                            turn_value
+                            > effective_yaw_threshold
+                        ):
                             head_turn = "RIGHT"
 
-                    # Up / down: nose position relative to the eyes,
-                    # normalised by face height (forehead -> chin).
-                    eye_y = (face[33].y + face[263].y) / 2
-                    face_height = face[152].y - face[10].y
+                    # ----------------------------------
+                    # UP/DOWN HEAD PITCH
+                    #
+                    # Calibrate a neutral baseline first.
+                    # Use normalized face height and require
+                    # consecutive frames for activation.
+                    # ----------------------------------
+
+                    face_height = (
+                        face[152].y - face[10].y
+                    )
 
                     if face_height > 0:
-                        pitch_raw = (face[1].y - eye_y) / face_height
+                        pitch_raw = (
+                            nose.y - eye_mid_y
+                        ) / face_height
 
-                        if pitch_baseline is None:
-                            # Calibration: user looks straight ahead
+                        # Respect the existing calibration
+                        # setting without changing its meaning.
+                        effective_pitch_baseline = (
+                            pitch_baseline
+                            if pitch_baseline is not None
+                            else None
+                        )
+
+                        if effective_pitch_baseline is None:
                             pitch_samples.append(pitch_raw)
-                            head_pitch = "CALIBRATING"
 
-                            if len(pitch_samples) >= calibration_frames:
+                            head_vertical = "CALIBRATING"
+
+                            if (
+                                len(pitch_samples)
+                                >= calibration_frames
+                            ):
                                 pitch_baseline = (
-                                    sum(pitch_samples) / len(pitch_samples)
+                                    sum(pitch_samples)
+                                    / len(pitch_samples)
                                 )
-                        else:
-                            delta = pitch_raw - pitch_baseline
 
-                            # Looking up moves the nose up in the image
-                            # (smaller y), so delta goes negative.
+                                up_count = 0
+                                down_count = 0
+
+                                head_vertical = "CENTER"
+
+                        else:
+                            delta = (
+                                pitch_raw - pitch_baseline
+                            )
+
+                            # Looking up moves the nose up
+                            # in the image, so delta is negative.
                             if delta < -pitch_threshold:
-                                head_pitch = "UP"
+                                up_count += 1
+                                down_count = 0
+
                             elif delta > pitch_threshold:
-                                head_pitch = "DOWN"
+                                down_count += 1
+                                up_count = 0
+
                             else:
-                                head_pitch = "CENTER"
-                                # Slowly adapt baseline while head is neutral
+                                up_count = 0
+                                down_count = 0
+
+                                head_vertical = "CENTER"
+
+                                # Slowly adapt the baseline
+                                # when the head is neutral.
                                 pitch_baseline += (
-                                    (pitch_raw - pitch_baseline) * 0.01
+                                    (
+                                        pitch_raw
+                                        - pitch_baseline
+                                    ) * 0.01
                                 )
+
+                            if (
+                                up_count
+                                >= pitch_confirm_frames
+                            ):
+                                head_vertical = "UP"
+
+                            elif (
+                                down_count
+                                >= pitch_confirm_frames
+                            ):
+                                head_vertical = "DOWN"
+
+                            elif (
+                                up_count
+                                < pitch_confirm_frames
+                                and down_count
+                                < pitch_confirm_frames
+                            ):
+                                head_vertical = "CENTER"
+
+                # --------------------------------------
+                # PUBLISH HEAD STATE
+                # --------------------------------------
 
                 update_state(
+                    face_detected=face_found,
+                    head_yaw=round(yaw, 4),
+                    head_pitch=round(pitch, 4),
                     head_direction=head_turn,
-                    head_pitch=head_pitch,
+                    head_vertical=head_vertical,
+                    frame_count=frame_number,
                     updated_at=time.time(),
                 )
 
                 current_time = time.time()
 
-                # Left / right head click (unchanged)
+                # --------------------------------------
+                # HEAD LEFT/RIGHT ACTIONS
+                #
+                # Preserve configurable head actions,
+                # click cooldown, and voice typing.
+                # --------------------------------------
+
                 if (
-                    head_turn != "CENTER"
+                    cfg["head_actions"]
+                    and head_turn != "CENTER"
                     and previous_head_turn == "CENTER"
-                    and current_time - last_head_click_time
-                    >= head_click_delay
+                    and (
+                        current_time - last_head_click_time
+                        >= head_click_delay
+                    )
                 ):
                     if head_turn == "LEFT":
                         pyautogui.click(button="left")
 
                         try:
                             start_voice_typing()
+
                         except Exception:
-                            print("Voice typing could not start:")
+                            print(
+                                "Voice typing could not start:"
+                            )
                             traceback.print_exc()
 
                     elif head_turn == "RIGHT":
@@ -401,18 +858,38 @@ def run():
 
                 previous_head_turn = head_turn
 
-                # Up / down head = continuous scrolling while held
-                if head_pitch in ("UP", "DOWN"):
-                    if head_pitch != previous_head_pitch:
-                        last_scroll_time = 0.0  # scroll immediately on entry
+                # --------------------------------------
+                # HEAD UP/DOWN CONTINUOUS SCROLLING
+                #
+                # Preserve the existing setting that
+                # enables/disables all head actions.
+                # --------------------------------------
 
-                    if current_time - last_scroll_time >= scroll_repeat_delay:
+                if (
+                    cfg["head_actions"]
+                    and head_vertical in ("UP", "DOWN")
+                ):
+                    if (
+                        head_vertical
+                        != previous_head_vertical
+                    ):
+                        # Scroll immediately upon entering
+                        # a confirmed UP/DOWN state.
+                        last_scroll_time = 0.0
+
+                    if (
+                        current_time - last_scroll_time
+                        >= scroll_repeat_delay
+                    ):
                         pyautogui.scroll(
-                            scroll_step if head_pitch == "UP" else -scroll_step
+                            scroll_step
+                            if head_vertical == "UP"
+                            else -scroll_step
                         )
+
                         last_scroll_time = current_time
 
-                previous_head_pitch = head_pitch
+                previous_head_vertical = head_vertical
 
                 # --------------------------------------
                 # HAND DETECTION AND GESTURE CLASSIFICATION
@@ -420,10 +897,13 @@ def run():
 
                 if result.hand_landmarks:
                     landmarks = result.hand_landmarks[0]
-                    prediction = classify_gesture(landmarks)
 
-                    # Landmarks come from the already-mirrored frame,
-                    # so they match the streamed video directly.
+                    prediction = classify_gesture(
+                        landmarks
+                    )
+
+                    # Landmarks match the mirrored image
+                    # sent to the frontend.
                     landmark_data = [
                         {
                             "x": float(point.x),
@@ -441,27 +921,87 @@ def run():
                         updated_at=time.time(),
                     )
 
-                    # Point, Peace and Open Palm move the cursor.
-                    if prediction in ("Point", "Peace", "Open Palm"):
+                    # ----------------------------------
+                    # CURSOR MOVEMENT
+                    # Preserve existing cursor toggle,
+                    # sensitivity and smoothing settings.
+                    # ----------------------------------
+
+                    if (
+                        cfg["cursor_control"]
+                        and prediction in (
+                            "Point",
+                            "Peace",
+                            "Open Palm",
+                        )
+                    ):
                         finger = landmarks[8]
 
-                        x = (finger.x - 0.20) / 0.60
-                        y = (finger.y - 0.20) / 0.60
+                        # Higher sensitivity means a smaller
+                        # hand movement covers more of the
+                        # screen.
+                        span = max(
+                            0.25,
+                            min(
+                                1.0,
+                                1.06
+                                - cfg["sensitivity"] * 0.077,
+                            ),
+                        )
 
-                        x = max(0.0, min(1.0, x))
-                        y = max(0.0, min(1.0, y))
+                        margin = (1.0 - span) / 2
 
-                        target_x = int(x * (screen_width - 1))
-                        target_y = int(y * (screen_height - 1))
+                        x = max(
+                            0.0,
+                            min(
+                                1.0,
+                                (finger.x - margin) / span,
+                            ),
+                        )
+
+                        y = max(
+                            0.0,
+                            min(
+                                1.0,
+                                (finger.y - margin) / span,
+                            ),
+                        )
+
+                        target_x = int(
+                            x * (screen_width - 1)
+                        )
+
+                        target_y = int(
+                            y * (screen_height - 1)
+                        )
+
+                        # Higher smoothing percentage means
+                        # slower, steadier cursor movement.
+                        alpha = (
+                            0.08
+                            + 0.6
+                            * (
+                                1 - cfg["smoothing"] / 100
+                            )
+                        )
 
                         if smooth_x == 0 and smooth_y == 0:
                             smooth_x = target_x
                             smooth_y = target_y
-                        else:
-                            smooth_x += (target_x - smooth_x) * smoothing
-                            smooth_y += (target_y - smooth_y) * smoothing
 
-                        pyautogui.moveTo(int(smooth_x), int(smooth_y))
+                        else:
+                            smooth_x += (
+                                target_x - smooth_x
+                            ) * alpha
+
+                            smooth_y += (
+                                target_y - smooth_y
+                            ) * alpha
+
+                        pyautogui.moveTo(
+                            int(smooth_x),
+                            int(smooth_y),
+                        )
 
                     draw_hand(frame, landmarks)
 
@@ -474,8 +1014,11 @@ def run():
                         updated_at=time.time(),
                     )
 
-                # Stream the annotated frame to the web UI
-                # (no cv2.imshow: it is unsafe in a server thread).
+                # --------------------------------------
+                # STREAM FRAME TO WEB FRONTEND
+                # --------------------------------------
+
+                # Keep cv2.imshow() out of the server thread.
                 _publish_frame(frame)
 
     except Exception as exc:
@@ -491,6 +1034,11 @@ def run():
         raise
 
     finally:
+        # ------------------------------------------
+        # CLEANUP
+        # Preserve the old shutdown behavior.
+        # ------------------------------------------
+
         if cap is not None:
             cap.release()
 
@@ -502,6 +1050,7 @@ def run():
             running=False,
             phase="stopped",
             hand_detected=False,
+            face_detected=False,
             landmarks=[],
             gesture=(
                 "Tracking failed"
@@ -509,7 +1058,9 @@ def run():
                 else "Tracking stopped"
             ),
             confidence=None,
-            head_pitch="CENTER",
+            head_pitch=0.0,
+            head_vertical="CENTER",
+            brightness=None,
             updated_at=time.time(),
         )
 

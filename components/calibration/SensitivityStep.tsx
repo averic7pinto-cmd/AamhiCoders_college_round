@@ -9,9 +9,14 @@ const presets = [
   { value: '9', label: 'Fast' },
 ];
 
+// Same formula as mouse_control_copy.py.
+function handSpan(sensitivity: number): number {
+  return Math.round(Math.max(0.25, Math.min(1, 1.06 - sensitivity * 0.077)) * 100);
+}
+
 export function SensitivityStep() {
   const { sensitivity, setSensitivity, smoothing, setSmoothing } = useSession();
-  const travel = sensitivity * 10;
+  const span = handSpan(sensitivity);
   const presetValue = presets.some((p) => p.value === String(sensitivity)) ? String(sensitivity) : null;
 
   return (
@@ -19,7 +24,9 @@ export function SensitivityStep() {
       <div className="space-y-7">
         <div>
           <h3 className="font-display text-xl font-semibold">How far should the pointer travel?</h3>
-          <p className="mt-2 text-muted">Pick a starting point, then fine-tune. You’ll try it in the next step.</p>
+          <p className="mt-2 text-muted">
+            Raise your index finger and move it. The real pointer follows these settings, so you can feel the difference as you adjust.
+          </p>
         </div>
         <SegmentedControl label="Sensitivity preset" options={presets} value={presetValue} onChange={(v) => setSensitivity(Number(v))} fullWidth />
         <Slider label="Cursor sensitivity" value={sensitivity} onChange={setSensitivity} min={1} max={10} format={(v) => `${v} / 10`} minLabel="Less travel" maxLabel="More travel" />
@@ -27,20 +34,22 @@ export function SensitivityStep() {
       </div>
 
       <div className="rounded-3xl border border-line bg-ink-3/50 p-6">
-        <p className="text-sm font-bold text-muted">Pointer travel for a 10° head turn</p>
-        <p className="mt-1 font-display text-4xl font-semibold tabular-nums text-cyan">≈ {travel}% <span className="text-lg text-muted">of screen</span></p>
-        <div className="relative mt-6 h-28 rounded-2xl border border-line bg-[#0B0E16] bg-grid" aria-hidden="true">
-          <span className="absolute left-4 top-1/2 h-3 w-3 -translate-y-1/2 rounded-full bg-muted" />
+        <p className="text-sm font-bold text-muted">Hand movement needed to cross the whole screen</p>
+        <p className="mt-1 font-display text-4xl font-semibold tabular-nums text-cyan">
+          ≈ {span}% <span className="text-lg text-muted">of the camera view</span>
+        </p>
+
+        <div className="relative mt-6 aspect-[4/3] w-full rounded-2xl border border-line bg-[#0B0E16] bg-grid" aria-hidden="true">
           <span
-            className="absolute left-4 top-1/2 h-1 -translate-y-1/2 rounded-full bg-[linear-gradient(90deg,#31D7FF,#9B5CFF)] transition-[width] duration-200 ease-out"
-            style={{ width: `calc((100% - 2rem) * ${travel / 100})` }}
+            className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-xl border-2 border-dashed border-lime bg-lime/10 transition-[width,height] duration-200 ease-out"
+            style={{ width: `${span}%`, height: `${span}%` }}
           />
-          <span
-            className="absolute top-1/2 h-5 w-5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-lime shadow-glow-lime transition-[left] duration-200 ease-out"
-            style={{ left: `calc(1rem + (100% - 2rem) * ${travel / 100})` }}
-          />
+          <span className="absolute left-1/2 top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-lime shadow-glow-lime" />
         </div>
-        <p className="mt-4 text-sm text-muted">Balanced (6) suits most people. Choose Gentle if small movements are tiring or hard to control.</p>
+
+        <p className="mt-4 text-sm text-muted">
+          Your fingertip only has to stay inside the dashed box. A smaller box means less movement. Balanced (6) suits most people. Choose Gentle if small movements are hard to control.
+        </p>
       </div>
     </div>
   );

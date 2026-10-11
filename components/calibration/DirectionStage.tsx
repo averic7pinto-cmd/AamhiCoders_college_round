@@ -1,22 +1,42 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { CheckIcon, RotateCcwIcon, ScanFaceIcon, TargetIcon } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { calibrationDirections } from '../../data/calibration';
 import type { Direction } from '../../types/calibration';
 
-interface DirectionStageProps {
-  done: Direction[];
-  onCapture: (d: Direction) => void;
-  onRetry: (d: Direction) => void;
+export interface HeadPose {
+  yaw: number;   // < 0 turned left, > 0 turned right
+  pitch: number; // < 0 looking up, > 0 looking down
 }
 
-const HOLD_MS = 1500;
+interface DirectionStageProps {
+  done: Direction[];
+  onCapture: (d: Direction, pose?: HeadPose) => void;
+  onRetry: (d: Direction) => void;
+  /** Live head pose from the Python tracker, or null if no face / no tracker. */
+  pose?: HeadPose | null;
+  /** The captured "center" pose, once available. */
+  center?: HeadPose | null;
+}
 
-export function DirectionStage({ done, onCapture, onRetry }: DirectionStageProps) {
+const HOLD_MS = 1200;
+const YAW_TRIGGER = 0.1;
+const PITCH_TRIGGER = 0.07;
+const STILL_LIMIT = 0.04;
+
+export function DirectionStage({ done, onCapture, onRetry, pose = null, center = null }: DirectionStageProps) {
   const firstOpen = calibrationDirections.find((d) => !done.includes(d.id))?.id ?? 'center';
   const [active, setActive] = useState<Direction>(firstOpen);
   const [capturing, setCapturing] = useState(false);
+
+  const poseRef = useRef<HeadPose | null>(pose);
+  poseRef.current = pose;
+  const lastPose = useRef<HeadPose | null>(null);
+  const wasTracked = useRef(false);
+
+  const tracked = pose !== null;
+  const isDone = done.includes(active);
 
   useEffect(() => {
     if (done.includes(active)) {
@@ -25,17 +45,69 @@ export function DirectionStage({ done, onCapture, onRetry }: DirectionStageProps
     }
   }, [done]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Automatic capture: the ring fills while the real head pose matches.
+  useEffect(() => {
+    if (!pose) {
+      lastPose.current = null;
+      if (wasTracked.current) {
+        wasTracked.current = false;
+        setCapturing(false); // face lost mid-hold
+      }
+      return;
+    }
+
+    wasTracked.current = true;
+
+    if (isDone) {
+      setCapturing(false);
+      return;
+    }
+
+    let match = false;
+
+    if (active === 'center') {
+      const previous = lastPose.current;
+      match =
+        previous !== null &&
+        Math.abs(pose.yaw - previous.yaw) < STILL_LIMIT &&
+        Math.abs(pose.pitch - previous.pitch) < STILL_LIMIT;
+      lastPose.current = pose;
+    } else if (center) {
+      const dy = pose.yaw - center.yaw;
+      const dp = pose.pitch - center.pitch;
+      match =
+        active === 'left' ? dy < -YAW_TRIGGER
+        : active === 'right' ? dy > YAW_TRIGGER
+        : active === 'up' ? dp < -PITCH_TRIGGER
+        : active === 'down' ? dp > PITCH_TRIGGER
+        : false;
+    }
+
+    setCapturing(match);
+  }, [pose, active, center, isDone]);
+
+  // Finish the capture after the ring has been full for HOLD_MS.
   useEffect(() => {
     if (!capturing) return;
     const t = window.setTimeout(() => {
       setCapturing(false);
-      onCapture(active);
+      onCapture(active, poseRef.current ?? undefined);
     }, HOLD_MS);
     return () => window.clearTimeout(t);
   }, [capturing, active, onCapture]);
 
   const dir = calibrationDirections.find((d) => d.id === active)!;
-  const isDone = done.includes(active);
+  const needsCenter = tracked && active !== 'center' && !center;
+
+  const hint = !tracked
+    ? 'Keep your shoulders still. Hold for a moment while the ring fills.'
+    : needsCenter
+      ? 'Capture the center position first.'
+      : capturing
+        ? 'Hold it…'
+        : active === 'center'
+          ? 'Look straight ahead and keep your head still.'
+          : 'Move your head until the ring starts filling, then hold.';
 
   return (
     <div className="space-y-6">
@@ -45,7 +117,7 @@ export function DirectionStage({ done, onCapture, onRetry }: DirectionStageProps
             {done.length} of {calibrationDirections.length} directions captured
           </p>
           <h3 className="mt-1 font-display text-2xl font-semibold">{dir.instruction}</h3>
-          <p className="mt-1 text-muted">Keep your shoulders still. Hold for a moment while the ring fills.</p>
+          <p className="mt-1 text-muted">{hint}</p>
         </div>
       </div>
 
@@ -129,12 +201,16 @@ export function DirectionStage({ done, onCapture, onRetry }: DirectionStageProps
           <Button size="xl" variant="secondary" icon={RotateCcwIcon} onClick={() => onRetry(active)}>
             Retry {dir.label.toLowerCase()}
           </Button>
+        ) : tracked ? (
+          <p className="rounded-2xl bg-ink-3/70 px-4 py-3 text-sm text-muted">
+            Capture is automatic. Hold the pose until the ring is full.
+          </p>
         ) : (
           <Button size="xl" icon={TargetIcon} loading={capturing} onClick={() => setCapturing(true)}>
             {capturing ? 'Hold still…' : `Capture ${dir.label.toLowerCase()}`}
           </Button>
         )}
-        {capturing && (
+        {capturing && !tracked && (
           <Button size="xl" variant="ghost" onClick={() => setCapturing(false)}>
             Cancel
           </Button>
